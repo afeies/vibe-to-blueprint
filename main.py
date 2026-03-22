@@ -26,4 +26,5 @@ def run(user_text: str):
 
 if __name__ == "__main__":
     txt = input("Describe your room vibe: ")
+    os.makedirs("outputs", exist_ok=True)
     run(txt)

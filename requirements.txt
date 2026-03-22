@@ -1,0 +1,10 @@
+python-dotenv
+anthropic
+numpy
+opencv-python
+Pillow
+shapely
+torch
+diffusers
+transformers
+accelerate
