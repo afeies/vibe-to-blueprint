@@ -36,13 +36,13 @@ def build_prompt(schema: dict) -> tuple[str, str]:
                ", cartoon, distorted, low quality, watermark"
     return positive, negative
 
-def generate_images(schema: dict, edge_map: Image.Image, n=3) -> list:
+def generate_images(schema: dict, edge_map: Image.Image, n=3, seed_offset=0) -> list:
     pipe = _load_pipe()
     positive, negative = build_prompt(schema)
     edge_map = edge_map.resize((512, 512))
     images = []
     for seed in range(n):
-        gen = torch.Generator().manual_seed(seed * 42)
+        gen = torch.Generator().manual_seed((seed + seed_offset) * 42)
         out = pipe(
             positive,
             image=edge_map,

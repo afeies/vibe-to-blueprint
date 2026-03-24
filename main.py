@@ -1,8 +1,12 @@
 import os
-from pipeline.parser import parse_prompt
-from pipeline.layout import make_edge_map
-from pipeline.generate import generate_images
-from pipeline.rank import rank_images
+
+if os.environ.get("MOCK"):
+    from pipeline.mock import parse_prompt, make_edge_map, generate_images, rank_images
+else:
+    from pipeline.parser import parse_prompt
+    from pipeline.layout import make_edge_map
+    from pipeline.generate import generate_images
+    from pipeline.rank import rank_images
 
 def run(user_text: str):
     print("\n--- Parsing prompt ---")
@@ -25,6 +29,22 @@ def run(user_text: str):
         print(f"Saved {path}")
 
 if __name__ == "__main__":
-    txt = input("Describe your room vibe: ")
     os.makedirs("outputs", exist_ok=True)
-    run(txt)
+
+    # Create a list to store the conversation history
+    history = []
+
+    while True:
+        txt = input("\nDescribe your room vibe (or type 'done' to quit): ")
+
+        if txt.strip().lower() == "done":
+            break
+
+        # Add the new request to the history
+        history.append(txt)
+
+        # Combine all history into one big context string for the AI
+        full_context = " | ".join(history)
+
+        # Pass the combined history to your run function
+        run(full_context)

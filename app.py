@@ -12,10 +12,13 @@ import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # ── local module imports (same package) ──────────────────────────────────────
-from pipeline.parser import parse_prompt
-from pipeline.layout import make_edge_map
-from pipeline.generate import generate_images
-from pipeline.rank import rank_images
+if os.environ.get("MOCK"):
+    from pipeline.mock import parse_prompt, make_edge_map, generate_images, rank_images
+else:
+    from pipeline.parser import parse_prompt
+    from pipeline.layout import make_edge_map
+    from pipeline.generate import generate_images
+    from pipeline.rank import rank_images
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -91,10 +94,19 @@ def run_pipeline(
 # State helper — tracks a seed offset so "Regenerate" produces new images
 # ─────────────────────────────────────────────────────────────────────────────
 
-def generate_handler(vibe_text, sketch_img, seed_state):
+def generate_handler(vibe_text, sketch_img, seed_state, history):
+    history = [vibe_text]
     images, status = run_pipeline(vibe_text, sketch_img, seed_offset=seed_state)
-    new_seed = seed_state + 100          # shift seeds for next regeneration
-    return images, status, new_seed
+    return images, status, seed_state + 100, history
+
+
+def refine_handler(vibe_text, refinement_text, sketch_img, seed_state, history):
+    if not refinement_text.strip():
+        return [], "⚠️  Please enter a refinement.", seed_state, history
+    history = history + [refinement_text]
+    full_context = " | ".join(history)
+    images, status = run_pipeline(full_context, sketch_img, seed_offset=seed_state)
+    return images, status, seed_state + 100, history
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -122,8 +134,9 @@ with gr.Blocks(
         elem_id="header",
     )
 
-    # ── Hidden state: seed offset (integer) ──────────────────────────────
+    # ── Hidden state: seed offset (integer) and prompt history ──────────
     seed_state = gr.State(value=0)
+    history_state = gr.State(value=[])
 
     # ── Main row ─────────────────────────────────────────────────────────
     with gr.Row():
@@ -148,8 +161,18 @@ with gr.Blocks(
                 height=220,
             )
 
+            refinement_input = gr.Textbox(
+                label="Refinement prompt",
+                placeholder=(
+                    "e.g. Make it warmer, add more plants, "
+                    "darker wood tones…"
+                ),
+                lines=2,
+            )
+
             with gr.Row():
                 generate_btn = gr.Button("✨  Generate", variant="primary")
+                refine_btn = gr.Button("🔧  Refine", variant="secondary")
                 regenerate_btn = gr.Button("🔄  Regenerate")
 
             status_box = gr.Textbox(
@@ -206,14 +229,20 @@ with gr.Blocks(
 
     generate_btn.click(
         fn=generate_handler,
-        inputs=[vibe_input, sketch_input, seed_state],
-        outputs=[gallery, status_box, seed_state],
+        inputs=[vibe_input, sketch_input, seed_state, history_state],
+        outputs=[gallery, status_box, seed_state, history_state],
+    )
+
+    refine_btn.click(
+        fn=refine_handler,
+        inputs=[vibe_input, refinement_input, sketch_input, seed_state, history_state],
+        outputs=[gallery, status_box, seed_state, history_state],
     )
 
     regenerate_btn.click(
         fn=generate_handler,
-        inputs=[vibe_input, sketch_input, seed_state],
-        outputs=[gallery, status_box, seed_state],
+        inputs=[vibe_input, sketch_input, seed_state, history_state],
+        outputs=[gallery, status_box, seed_state, history_state],
     )
 
 
