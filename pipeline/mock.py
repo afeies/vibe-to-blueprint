@@ -44,3 +44,14 @@ def rank_images(images: list, text: str) -> list:
     shuffled = list(images)
     random.shuffle(shuffled)
     return shuffled
+
+
+def critique_image(image, user_text: str, schema: dict) -> str:
+    style = ", ".join(schema.get("style", [])) or "modern"
+    materials = ", ".join(schema.get("materials", [])) or "wood and fabric"
+    return (
+        f"[MOCK critique] The render shows a {style} interior featuring {materials}, "
+        f"with balanced lighting and a clear focal point. It broadly matches the vibe "
+        f"you described, though the mood feels slightly cooler than intended. "
+        f"Consider warming the palette or adding textured textiles to strengthen the feel."
+    )

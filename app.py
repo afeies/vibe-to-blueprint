@@ -13,12 +13,19 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # ── local module imports (same package) ──────────────────────────────────────
 if os.environ.get("MOCK"):
-    from pipeline.mock import parse_prompt, make_edge_map, generate_images, rank_images
+    from pipeline.mock import (
+        parse_prompt,
+        make_edge_map,
+        generate_images,
+        rank_images,
+        critique_image,
+    )
 else:
     from pipeline.parser import parse_prompt
     from pipeline.layout import make_edge_map
     from pipeline.generate import generate_images
     from pipeline.rank import rank_images
+    from pipeline.critique import critique_image
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -52,20 +59,20 @@ def run_pipeline(
     vibe_text: str,
     sketch_img: np.ndarray | None,
     seed_offset: int,
-) -> tuple[list[Image.Image], str]:
+) -> tuple[list[Image.Image], str, dict]:
     """
     Full text → image pipeline.
-    Returns (list_of_3_pil_images, status_message).
+    Returns (list_of_3_pil_images, status_message, parsed_schema).
     """
     if not vibe_text.strip():
-        return [], "⚠️  Please enter a vibe description."
+        return [], "⚠️  Please enter a vibe description.", {}
 
     # 1. LLM parse ─────────────────────────────────────────────────────────
     try:
         schema = parse_prompt(vibe_text)
         schema_str = str(schema)
     except Exception as e:
-        return [], f"❌  LLM parsing failed: {e}"
+        return [], f"❌  LLM parsing failed: {e}", {}
 
     # 2. Edge map ──────────────────────────────────────────────────────────
     edge_map = sketch_to_edge_map(sketch_img)
@@ -78,7 +85,7 @@ def run_pipeline(
     try:
         candidates = generate_images(schema, edge_map, n=6, seed_offset=seed_offset)
     except Exception as e:
-        return [], f"❌  Image generation failed: {e}"
+        return [], f"❌  Image generation failed: {e}", schema
 
     # 4. CLIP rank → top 3 ────────────────────────────────────────────────
     try:
@@ -87,7 +94,7 @@ def run_pipeline(
         top3 = candidates[:3]   # graceful fallback if CLIP fails
 
     status = f"✅  Done!  Parsed schema: {schema_str}"
-    return top3, status
+    return top3, status, schema
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -96,17 +103,52 @@ def run_pipeline(
 
 def generate_handler(vibe_text, sketch_img, seed_state, history):
     history = [vibe_text]
-    images, status = run_pipeline(vibe_text, sketch_img, seed_offset=seed_state)
-    return images, status, seed_state + 100, history
+    images, status, schema = run_pipeline(vibe_text, sketch_img, seed_offset=seed_state)
+    return images, status, seed_state + 100, history, images, schema
 
 
 def refine_handler(vibe_text, refinement_text, sketch_img, seed_state, history):
     if not refinement_text.strip():
-        return [], "⚠️  Please enter a refinement.", seed_state, history
+        return [], "⚠️  Please enter a refinement.", seed_state, history, [], {}
     history = history + [refinement_text]
     full_context = " | ".join(history)
-    images, status = run_pipeline(full_context, sketch_img, seed_offset=seed_state)
-    return images, status, seed_state + 100, history
+    images, status, schema = run_pipeline(full_context, sketch_img, seed_offset=seed_state)
+    return images, status, seed_state + 100, history, images, schema
+
+
+def on_gallery_select(evt: gr.SelectData) -> int:
+    return evt.index
+
+
+def critique_handler(images, selected_idx, vibe_text, schema):
+    if not images:
+        return "⚠️  Generate some images first."
+    if selected_idx is None:
+        return "⚠️  Click an image in the gallery to select it first."
+    if selected_idx >= len(images):
+        return "⚠️  Selection is out of range — regenerate and try again."
+
+    img = images[selected_idx]
+    # Gradio gallery values can come back as PIL, numpy, file path, or (path, caption)
+    if isinstance(img, tuple):
+        img = img[0]
+    if isinstance(img, str):
+        img = Image.open(img)
+    elif isinstance(img, np.ndarray):
+        img = Image.fromarray(img)
+
+    try:
+        return critique_image(img, vibe_text, schema or {})
+    except Exception as e:
+        msg = str(e).lower()
+        if "connection" in msg or "refused" in msg:
+            return (
+                "⚠️  Could not reach Ollama at localhost:11434.\n"
+                "Run `ollama serve` and `ollama pull llava`, then try again."
+            )
+        if "model" in msg and ("not found" in msg or "404" in msg):
+            return "⚠️  LLaVA model not installed. Run `ollama pull llava`."
+        return f"❌  Critique failed: {e}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -134,9 +176,12 @@ with gr.Blocks(
         elem_id="header",
     )
 
-    # ── Hidden state: seed offset (integer) and prompt history ──────────
+    # ── Hidden state: seed, history, current images, parsed schema, selection ──
     seed_state = gr.State(value=0)
     history_state = gr.State(value=[])
+    images_state = gr.State(value=[])
+    schema_state = gr.State(value={})
+    selected_idx_state = gr.State(value=None)
 
     # ── Main row ─────────────────────────────────────────────────────────
     with gr.Row():
@@ -185,13 +230,21 @@ with gr.Blocks(
         # Right column — outputs
         with gr.Column(scale=2, min_width=480):
             gallery = gr.Gallery(
-                label="Top-3 Ranked Renders",
+                label="Top-3 Ranked Renders (click one to select)",
                 columns=3,
                 rows=1,
                 height=380,
                 object_fit="cover",
                 elem_id="gallery",
                 show_label=True,
+            )
+
+            critique_btn = gr.Button("🔍  Critique selected image (LLaVA)")
+            critique_box = gr.Textbox(
+                label="LLaVA critique",
+                interactive=False,
+                lines=5,
+                placeholder="Generate images, click one in the gallery, then click Critique.",
             )
 
     # ── Accordion: how it works ───────────────────────────────────────────
@@ -230,19 +283,31 @@ with gr.Blocks(
     generate_btn.click(
         fn=generate_handler,
         inputs=[vibe_input, sketch_input, seed_state, history_state],
-        outputs=[gallery, status_box, seed_state, history_state],
+        outputs=[gallery, status_box, seed_state, history_state, images_state, schema_state],
     )
 
     refine_btn.click(
         fn=refine_handler,
         inputs=[vibe_input, refinement_input, sketch_input, seed_state, history_state],
-        outputs=[gallery, status_box, seed_state, history_state],
+        outputs=[gallery, status_box, seed_state, history_state, images_state, schema_state],
     )
 
     regenerate_btn.click(
         fn=generate_handler,
         inputs=[vibe_input, sketch_input, seed_state, history_state],
-        outputs=[gallery, status_box, seed_state, history_state],
+        outputs=[gallery, status_box, seed_state, history_state, images_state, schema_state],
+    )
+
+    gallery.select(
+        fn=on_gallery_select,
+        inputs=None,
+        outputs=[selected_idx_state],
+    )
+
+    critique_btn.click(
+        fn=critique_handler,
+        inputs=[images_state, selected_idx_state, vibe_input, schema_state],
+        outputs=[critique_box],
     )
 
 
