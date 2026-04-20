@@ -1,11 +1,10 @@
 """
 app.py — Gradio UI (v1) for Vibe-to-Space
-Day 2–3 deliverable: text input, optional sketch upload, top-3 gallery, regenerate button.
+Day 2–3 deliverable: text input, top-3 gallery, regenerate button.
 """
 
 import gradio as gr
 import numpy as np
-import cv2
 from PIL import Image
 import sys
 import os
@@ -42,32 +41,8 @@ def cached_parse(vibe_text: str) -> dict:
 # Core pipeline function
 # ─────────────────────────────────────────────────────────────────────────────
 
-def sketch_to_edge_map(sketch_img: np.ndarray | None) -> Image.Image | None:
-    """
-    Convert a user-uploaded sketch (numpy RGBA/RGB array from Gradio) into
-    a Canny edge map PIL image.  Returns None if no sketch was provided.
-    """
-    if sketch_img is None:
-        return None
-
-    # Gradio returns numpy arrays; convert to PIL then to grayscale
-    pil = Image.fromarray(sketch_img).convert("L")
-    gray = np.array(pil)
-
-    # Mild blur to reduce noise before edge detection
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    edges = cv2.Canny(blurred, 100, 200)
-
-    # Morphological closing to consolidate fragmented edges
-    kernel = np.ones((3, 3), np.uint8)
-    edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
-
-    return Image.fromarray(edges).convert("RGB")
-
-
 def run_pipeline_stream(
     vibe_text: str,
-    sketch_img: np.ndarray | None,
     seed_offset: int,
 ):
     """
@@ -111,10 +86,8 @@ def run_pipeline_stream(
     )
 
     # Step 2a — edge map
-    edge_map = sketch_to_edge_map(sketch_img)
-    if edge_map is None:
-        rooms = schema.get("rooms", ["living room"])
-        edge_map = make_edge_map(rooms)
+    rooms = schema.get("rooms", ["living room"])
+    edge_map = make_edge_map(rooms)
     t_edge = time.perf_counter()
 
     # Step 2b — generate
@@ -148,16 +121,16 @@ def run_pipeline_stream(
 # State helper — tracks a seed offset so "Regenerate" produces new images
 # ─────────────────────────────────────────────────────────────────────────────
 
-def generate_handler(vibe_text, sketch_img, seed_state, history):
+def generate_handler(vibe_text, seed_state, history):
     history = [vibe_text]
     new_seed = seed_state + 100
     for ranked, blueprint, status, schema in run_pipeline_stream(
-        vibe_text, sketch_img, seed_offset=seed_state
+        vibe_text, seed_offset=seed_state
     ):
         yield ranked, blueprint, status, new_seed, history, ranked, schema
 
 
-def refine_handler(vibe_text, refinement_text, sketch_img, seed_state, history):
+def refine_handler(vibe_text, refinement_text, seed_state, history):
     if not refinement_text.strip():
         yield [], None, "Please enter a refinement.", seed_state, history, [], {}
         return
@@ -165,7 +138,7 @@ def refine_handler(vibe_text, refinement_text, sketch_img, seed_state, history):
     full_context = " | ".join(history)
     new_seed = seed_state + 100
     for ranked, blueprint, status, schema in run_pipeline_stream(
-        full_context, sketch_img, seed_offset=seed_state
+        full_context, seed_offset=seed_state
     ):
         yield ranked, blueprint, status, new_seed, history, ranked, schema
 
@@ -224,7 +197,7 @@ with gr.Blocks(
         """
         # Vibe-to-Space
         ### A Human–AI Co-Creative Interior Design System
-        Describe the *feeling* of a space. Upload an optional sketch.
+        Describe the *feeling* of a space.
         We'll generate three interior design renders that match your vibe.
         """,
         elem_id="header",
@@ -250,14 +223,6 @@ with gr.Blocks(
                     "a few potted plants…"
                 ),
                 lines=5,
-            )
-
-            sketch_input = gr.Image(
-                label="Upload a sketch (optional)",
-                type="numpy",
-                sources=["upload", "clipboard"],
-                image_mode="RGB",
-                height=220,
             )
 
             refinement_input = gr.Textbox(
@@ -318,8 +283,7 @@ with gr.Blocks(
                materials, lighting, furniture, and rough dimensions from your
                description. A labelled floor plan is drawn from that schema and
                shown immediately.
-            2. **Edge Map** — if you upload a sketch it is converted to a Canny
-               edge map; otherwise a procedural layout is built from the room list.
+            2. **Edge Map** — a procedural layout is built from the room list.
             3. **ControlNet + SD 1.5 (Step 2)** — two candidate renders are
                generated with the edge map as structural conditioning.
             4. **CLIP Ranking** — both candidates are scored against your vibe
@@ -332,11 +296,11 @@ with gr.Blocks(
     # ── Examples ─────────────────────────────────────────────────────────
     gr.Examples(
         examples=[
-            ["A brutalist concrete loft with exposed ceilings, moody evening light, and a single low sofa.", None],
-            ["Japandi bedroom — white linen, bamboo accents, soft morning light filtering through shoji screens.", None],
-            ["A cosy mid-century reading nook with warm amber lamp light, walnut shelves, and a worn leather armchair.", None],
+            ["A brutalist concrete loft with exposed ceilings, moody evening light, and a single low sofa."],
+            ["Japandi bedroom — white linen, bamboo accents, soft morning light filtering through shoji screens."],
+            ["A cosy mid-century reading nook with warm amber lamp light, walnut shelves, and a worn leather armchair."],
         ],
-        inputs=[vibe_input, sketch_input],
+        inputs=[vibe_input],
         label="Example Prompts",
     )
 
@@ -345,19 +309,19 @@ with gr.Blocks(
 
     generate_btn.click(
         fn=generate_handler,
-        inputs=[vibe_input, sketch_input, seed_state, history_state],
+        inputs=[vibe_input, seed_state, history_state],
         outputs=[gallery, blueprint_output, status_box, seed_state, history_state, images_state, schema_state],
     )
 
     refine_btn.click(
         fn=refine_handler,
-        inputs=[vibe_input, refinement_input, sketch_input, seed_state, history_state],
+        inputs=[vibe_input, refinement_input, seed_state, history_state],
         outputs=[gallery, blueprint_output, status_box, seed_state, history_state, images_state, schema_state],
     )
 
     regenerate_btn.click(
         fn=generate_handler,
-        inputs=[vibe_input, sketch_input, seed_state, history_state],
+        inputs=[vibe_input, seed_state, history_state],
         outputs=[gallery, blueprint_output, status_box, seed_state, history_state, images_state, schema_state],
     )
 
