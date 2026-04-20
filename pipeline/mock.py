@@ -12,6 +12,8 @@ def parse_prompt(user_text: str) -> dict:
         "color_palette": ["#F5F0EB", "#8B7355", "#2F4F4F"],
         "camera": {"angle": "eye-level", "focal_length": "35mm"},
         "negative": ["clutter"],
+        "furniture": ["sofa", "coffee table", "bookshelf", "rug", "floor lamp"],
+        "dimensions": {"width_m": 5.0, "length_m": 4.0},
     }
 
 
@@ -44,6 +46,24 @@ def rank_images(images: list, text: str) -> list:
     shuffled = list(images)
     random.shuffle(shuffled)
     return shuffled
+
+
+def render_blueprint(schema: dict) -> Image.Image:
+    dims = schema.get("dimensions") or {}
+    w = float(dims.get("width_m") or 5.0)
+    h = float(dims.get("length_m") or 4.0)
+    img = Image.new("RGB", (512, 512), "#FAFAF7")
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([40, 40, 472, 472], outline="#2C2C2C", width=6)
+    rooms = ", ".join(schema.get("rooms") or ["room"])
+    furn = schema.get("furniture") or []
+    draw.text((60, 60), f"[MOCK] Blueprint - {rooms}", fill="#2C2C2C")
+    draw.text((60, 90), f"{w:.1f} m x {h:.1f} m", fill="#666")
+    for i, item in enumerate(furn[:6]):
+        y = 130 + i * 28
+        draw.rectangle([60, y, 220, y + 22], fill="#8B7355", outline="#2C2C2C")
+        draw.text((70, y + 5), item[:20], fill="white")
+    return img
 
 
 def critique_image(image, user_text: str, schema: dict) -> str:

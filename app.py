@@ -9,6 +9,8 @@ import cv2
 from PIL import Image
 import sys
 import os
+import time
+from functools import lru_cache
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # ── local module imports (same package) ──────────────────────────────────────
@@ -19,6 +21,7 @@ if os.environ.get("MOCK"):
         generate_images,
         rank_images,
         critique_image,
+        render_blueprint,
     )
 else:
     from pipeline.parser import parse_prompt
@@ -26,6 +29,13 @@ else:
     from pipeline.generate import generate_images
     from pipeline.rank import rank_images
     from pipeline.critique import critique_image
+    from pipeline.blueprint import render_blueprint
+
+
+# Skip the LLM call when the same vibe text is reused (e.g. Regenerate clicks).
+@lru_cache(maxsize=32)
+def cached_parse(vibe_text: str) -> dict:
+    return parse_prompt(vibe_text)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -55,46 +65,83 @@ def sketch_to_edge_map(sketch_img: np.ndarray | None) -> Image.Image | None:
     return Image.fromarray(edges).convert("RGB")
 
 
-def run_pipeline(
+def run_pipeline_stream(
     vibe_text: str,
     sketch_img: np.ndarray | None,
     seed_offset: int,
-) -> tuple[list[Image.Image], str, dict]:
+):
     """
-    Full text → image pipeline.
-    Returns (list_of_3_pil_images, status_message, parsed_schema).
+    Generator that runs the two-step pipeline and yields intermediate results.
+
+    Yields tuples of (ranked_images, blueprint, status, schema):
+      * first yield:  renders empty, blueprint ready (Step 1 done)
+      * second yield: renders ready, blueprint unchanged (Step 2 done)
     """
     if not vibe_text.strip():
-        return [], "⚠️  Please enter a vibe description.", {}
+        yield [], None, "Please enter a vibe description.", {}
+        return
 
-    # 1. LLM parse ─────────────────────────────────────────────────────────
+    t0 = time.perf_counter()
+
+    # Step 1a — LLM parse
     try:
-        schema = parse_prompt(vibe_text)
-        schema_str = str(schema)
+        schema = cached_parse(vibe_text)
     except Exception as e:
-        return [], f"❌  LLM parsing failed: {e}", {}
+        yield [], None, f"LLM parsing failed: {e}", {}
+        return
+    t_parse = time.perf_counter()
 
-    # 2. Edge map ──────────────────────────────────────────────────────────
+    # Step 1b — Blueprint
+    try:
+        blueprint = render_blueprint(schema)
+    except Exception as e:
+        print(f"[blueprint] render failed: {e}")
+        blueprint = None
+    t_bp = time.perf_counter()
+
+    yield (
+        [],
+        blueprint,
+        (
+            f"Step 1 complete: blueprint ready "
+            f"(parse {t_parse - t0:.1f}s, blueprint {t_bp - t_parse:.1f}s). "
+            f"Step 2: generating 2 renders..."
+        ),
+        schema,
+    )
+
+    # Step 2a — edge map
     edge_map = sketch_to_edge_map(sketch_img)
     if edge_map is None:
-        # Fall back to procedural layout from parsed room list
         rooms = schema.get("rooms", ["living room"])
         edge_map = make_edge_map(rooms)
+    t_edge = time.perf_counter()
 
-    # 3. Generate candidate images ─────────────────────────────────────────
+    # Step 2b — generate
     try:
-        candidates = generate_images(schema, edge_map, n=6, seed_offset=seed_offset)
+        candidates = generate_images(schema, edge_map, n=2, seed_offset=seed_offset)
     except Exception as e:
-        return [], f"❌  Image generation failed: {e}", schema
+        yield [], blueprint, f"Image generation failed: {e}", schema
+        return
+    t_gen = time.perf_counter()
 
-    # 4. CLIP rank → top 3 ────────────────────────────────────────────────
+    # Step 2c — rank
     try:
-        top3 = rank_images(candidates, vibe_text)[:3]
-    except Exception as e:
-        top3 = candidates[:3]   # graceful fallback if CLIP fails
+        ranked = rank_images(candidates, vibe_text)
+    except Exception:
+        ranked = candidates
+    t_rank = time.perf_counter()
 
-    status = f"✅  Done!  Parsed schema: {schema_str}"
-    return top3, status, schema
+    timings = (
+        f"parse={t_parse - t0:.1f}s "
+        f"bp={t_bp - t_parse:.1f}s "
+        f"edge={t_edge - t_bp:.1f}s "
+        f"gen={t_gen - t_edge:.1f}s "
+        f"rank={t_rank - t_gen:.1f}s "
+        f"total={t_rank - t0:.1f}s"
+    )
+    print(f"[run_pipeline_stream] {timings}")
+    yield ranked, blueprint, f"Done ({timings}).", schema
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -103,17 +150,24 @@ def run_pipeline(
 
 def generate_handler(vibe_text, sketch_img, seed_state, history):
     history = [vibe_text]
-    images, status, schema = run_pipeline(vibe_text, sketch_img, seed_offset=seed_state)
-    return images, status, seed_state + 100, history, images, schema
+    new_seed = seed_state + 100
+    for ranked, blueprint, status, schema in run_pipeline_stream(
+        vibe_text, sketch_img, seed_offset=seed_state
+    ):
+        yield ranked, blueprint, status, new_seed, history, ranked, schema
 
 
 def refine_handler(vibe_text, refinement_text, sketch_img, seed_state, history):
     if not refinement_text.strip():
-        return [], "⚠️  Please enter a refinement.", seed_state, history, [], {}
+        yield [], None, "Please enter a refinement.", seed_state, history, [], {}
+        return
     history = history + [refinement_text]
     full_context = " | ".join(history)
-    images, status, schema = run_pipeline(full_context, sketch_img, seed_offset=seed_state)
-    return images, status, seed_state + 100, history, images, schema
+    new_seed = seed_state + 100
+    for ranked, blueprint, status, schema in run_pipeline_stream(
+        full_context, sketch_img, seed_offset=seed_state
+    ):
+        yield ranked, blueprint, status, new_seed, history, ranked, schema
 
 
 def on_gallery_select(evt: gr.SelectData) -> int:
@@ -122,11 +176,11 @@ def on_gallery_select(evt: gr.SelectData) -> int:
 
 def critique_handler(images, selected_idx, vibe_text, schema):
     if not images:
-        return "⚠️  Generate some images first."
+        return "Generate some images first."
     if selected_idx is None:
-        return "⚠️  Click an image in the gallery to select it first."
+        return "Click an image in the gallery to select it first."
     if selected_idx >= len(images):
-        return "⚠️  Selection is out of range — regenerate and try again."
+        return "Selection is out of range. Regenerate and try again."
 
     img = images[selected_idx]
     # Gradio gallery values can come back as PIL, numpy, file path, or (path, caption)
@@ -143,12 +197,12 @@ def critique_handler(images, selected_idx, vibe_text, schema):
         msg = str(e).lower()
         if "connection" in msg or "refused" in msg:
             return (
-                "⚠️  Could not reach Ollama at localhost:11434.\n"
+                "Could not reach Ollama at localhost:11434.\n"
                 "Run `ollama serve` and `ollama pull llava`, then try again."
             )
         if "model" in msg and ("not found" in msg or "404" in msg):
-            return "⚠️  LLaVA model not installed. Run `ollama pull llava`."
-        return f"❌  Critique failed: {e}"
+            return "LLaVA model not installed. Run `ollama pull llava`."
+        return f"Critique failed: {e}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -168,7 +222,7 @@ with gr.Blocks(
     # ── Header ────────────────────────────────────────────────────────────
     gr.Markdown(
         """
-        # 🏠 Vibe-to-Space
+        # Vibe-to-Space
         ### A Human–AI Co-Creative Interior Design System
         Describe the *feeling* of a space. Upload an optional sketch.
         We'll generate three interior design renders that match your vibe.
@@ -216,9 +270,9 @@ with gr.Blocks(
             )
 
             with gr.Row():
-                generate_btn = gr.Button("✨  Generate", variant="primary")
-                refine_btn = gr.Button("🔧  Refine", variant="secondary")
-                regenerate_btn = gr.Button("🔄  Regenerate")
+                generate_btn = gr.Button("Generate", variant="primary")
+                refine_btn = gr.Button("Refine", variant="secondary")
+                regenerate_btn = gr.Button("Regenerate")
 
             status_box = gr.Textbox(
                 label="Status",
@@ -229,17 +283,24 @@ with gr.Blocks(
 
         # Right column — outputs
         with gr.Column(scale=2, min_width=480):
+            blueprint_output = gr.Image(
+                label="Step 1: Blueprint (floor plan)",
+                height=340,
+                interactive=False,
+                show_label=True,
+            )
+
             gallery = gr.Gallery(
-                label="Top-3 Ranked Renders (click one to select)",
-                columns=3,
+                label="Step 2: Ranked Renders (click one to select)",
+                columns=2,
                 rows=1,
-                height=380,
+                height=340,
                 object_fit="cover",
                 elem_id="gallery",
                 show_label=True,
             )
 
-            critique_btn = gr.Button("🔍  Critique selected image (LLaVA)")
+            critique_btn = gr.Button("Critique selected image (LLaVA)")
             critique_box = gr.Textbox(
                 label="LLaVA critique",
                 interactive=False,
@@ -248,21 +309,23 @@ with gr.Blocks(
             )
 
     # ── Accordion: how it works ───────────────────────────────────────────
-    with gr.Accordion("ℹ️  How it works", open=False):
+    with gr.Accordion("How it works", open=False):
         gr.Markdown(
             """
-            1. **LLM Parse** — Claude extracts rooms, style, materials, lighting,
-               colour palette and negative attributes from your description.
-            2. **Edge Map** — If you upload a sketch it is converted to a Canny
-               edge map; otherwise a procedural layout is generated from the
-               parsed room list.
-            3. **ControlNet + SD 1.5** — Six candidate images are generated with
-               the edge map as structural conditioning and your parsed attributes
-               as the text prompt.
-            4. **CLIP Ranking** — All six candidates are scored against your
-               original vibe description; the top three are shown.
-            5. **Regenerate** shifts the random seeds so you get a fresh batch
-               without changing your inputs.
+            **Two-step pipeline:**
+
+            1. **LLM Parse + Blueprint (Step 1)** — Claude extracts rooms, style,
+               materials, lighting, furniture, and rough dimensions from your
+               description. A labelled floor plan is drawn from that schema and
+               shown immediately.
+            2. **Edge Map** — if you upload a sketch it is converted to a Canny
+               edge map; otherwise a procedural layout is built from the room list.
+            3. **ControlNet + SD 1.5 (Step 2)** — two candidate renders are
+               generated with the edge map as structural conditioning.
+            4. **CLIP Ranking** — both candidates are scored against your vibe
+               description and ordered best-first.
+            5. **Regenerate** shifts the random seeds for a fresh Step 2 batch
+               while keeping the same blueprint.
             """
         )
 
@@ -283,19 +346,19 @@ with gr.Blocks(
     generate_btn.click(
         fn=generate_handler,
         inputs=[vibe_input, sketch_input, seed_state, history_state],
-        outputs=[gallery, status_box, seed_state, history_state, images_state, schema_state],
+        outputs=[gallery, blueprint_output, status_box, seed_state, history_state, images_state, schema_state],
     )
 
     refine_btn.click(
         fn=refine_handler,
         inputs=[vibe_input, refinement_input, sketch_input, seed_state, history_state],
-        outputs=[gallery, status_box, seed_state, history_state, images_state, schema_state],
+        outputs=[gallery, blueprint_output, status_box, seed_state, history_state, images_state, schema_state],
     )
 
     regenerate_btn.click(
         fn=generate_handler,
         inputs=[vibe_input, sketch_input, seed_state, history_state],
-        outputs=[gallery, status_box, seed_state, history_state, images_state, schema_state],
+        outputs=[gallery, blueprint_output, status_box, seed_state, history_state, images_state, schema_state],
     )
 
     gallery.select(
@@ -315,7 +378,26 @@ with gr.Blocks(
 # Entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
+def prewarm():
+    """Trigger one-time model loads (SD + ControlNet + CLIP) before the first click."""
+    if os.environ.get("MOCK"):
+        return
+    print("Pre-warming SD + ControlNet + CLIP (this takes a minute on first run)...")
+    warm_schema = {
+        "style": ["modern"],
+        "materials": ["wood"],
+        "lighting": {"type": "natural", "time_of_day": "afternoon"},
+        "color_palette": ["beige"],
+        "negative": [],
+    }
+    warm_edge = make_edge_map(["living room"])
+    warm_imgs = generate_images(warm_schema, warm_edge, n=1)
+    rank_images(warm_imgs, "modern living room")
+    print("Models ready.")
+
+
 if __name__ == "__main__":
+    prewarm()
     demo.launch(
         server_name="0.0.0.0",
         server_port=7860,
