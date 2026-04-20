@@ -80,7 +80,7 @@ def run_pipeline_stream(
         (
             f"Step 1 complete: blueprint ready "
             f"(parse {t_parse - t0:.1f}s, blueprint {t_bp - t_parse:.1f}s). "
-            f"Step 2: generating 2 renders..."
+            f"Step 2: generating render..."
         ),
         schema,
     )
@@ -92,7 +92,7 @@ def run_pipeline_stream(
 
     # Step 2b — generate
     try:
-        candidates = generate_images(schema, edge_map, n=2, seed_offset=seed_offset)
+        candidates = generate_images(schema, edge_map, n=1, seed_offset=seed_offset)
     except Exception as e:
         yield [], blueprint, f"Image generation failed: {e}", schema
         return
@@ -198,7 +198,7 @@ with gr.Blocks(
         # Vibe-to-Space
         ### A Human–AI Co-Creative Interior Design System
         Describe the *feeling* of a space.
-        We'll generate three interior design renders that match your vibe.
+        We'll generate an interior design render that matches your vibe.
         """,
         elem_id="header",
     )
@@ -256,8 +256,8 @@ with gr.Blocks(
             )
 
             gallery = gr.Gallery(
-                label="Step 2: Ranked Renders (click one to select)",
-                columns=2,
+                label="Step 2: Render (click to select)",
+                columns=1,
                 rows=1,
                 height=340,
                 object_fit="cover",
@@ -284,11 +284,11 @@ with gr.Blocks(
                description. A labelled floor plan is drawn from that schema and
                shown immediately.
             2. **Edge Map** — a procedural layout is built from the room list.
-            3. **ControlNet + SD 1.5 (Step 2)** — two candidate renders are
-               generated with the edge map as structural conditioning.
-            4. **CLIP Ranking** — both candidates are scored against your vibe
-               description and ordered best-first.
-            5. **Regenerate** shifts the random seeds for a fresh Step 2 batch
+            3. **ControlNet + SD 1.5 (Step 2)** — a single render is generated
+               with the edge map as structural conditioning.
+            4. **CLIP Ranking** — the render is scored against your vibe
+               description.
+            5. **Regenerate** shifts the random seed for a fresh Step 2 render
                while keeping the same blueprint.
             """
         )
