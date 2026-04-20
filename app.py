@@ -342,26 +342,7 @@ with gr.Blocks(
 # Entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
-def prewarm():
-    """Trigger one-time model loads (SD + ControlNet + CLIP) before the first click."""
-    if os.environ.get("MOCK"):
-        return
-    print("Pre-warming SD + ControlNet + CLIP (this takes a minute on first run)...")
-    warm_schema = {
-        "style": ["modern"],
-        "materials": ["wood"],
-        "lighting": {"type": "natural", "time_of_day": "afternoon"},
-        "color_palette": ["beige"],
-        "negative": [],
-    }
-    warm_edge = make_edge_map(["living room"])
-    warm_imgs = generate_images(warm_schema, warm_edge, n=1)
-    rank_images(warm_imgs, "modern living room")
-    print("Models ready.")
-
-
 if __name__ == "__main__":
-    prewarm()
     demo.launch(
         server_name="0.0.0.0",
         server_port=7860,
