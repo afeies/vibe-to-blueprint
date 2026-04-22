@@ -26,6 +26,7 @@ def make_edge_map(rooms: list) -> Image.Image:
 
 
 def generate_images(schema: dict, edge_map: Image.Image, n=3, **kwargs) -> list:
+    image_size = int(kwargs.get("image_size") or edge_map.width or 512)
     images = []
     for i in range(n):
         color = (
@@ -33,7 +34,7 @@ def generate_images(schema: dict, edge_map: Image.Image, n=3, **kwargs) -> list:
             random.randint(100, 220),
             random.randint(100, 220),
         )
-        img = Image.new("RGB", (512, 512), color)
+        img = Image.new("RGB", (image_size, image_size), color)
         draw = ImageDraw.Draw(img)
         draw.text((20, 20), f"Mock render #{i+1}", fill="white")
         style = ", ".join(schema.get("style", []))

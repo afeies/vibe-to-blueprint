@@ -12,6 +12,10 @@ import time
 from functools import lru_cache
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+
+DEFAULT_IMAGE_SIZE = 512
+DEFAULT_INFERENCE_STEPS = 25
+
 # ── local module imports (same package) ──────────────────────────────────────
 if os.environ.get("MOCK"):
     from pipeline.mock import (
@@ -44,6 +48,8 @@ def cached_parse(vibe_text: str) -> dict:
 def run_pipeline_stream(
     vibe_text: str,
     seed_offset: int,
+    image_size: int,
+    num_inference_steps: int,
 ):
     """
     Generator that runs the two-step pipeline and yields intermediate results.
@@ -80,7 +86,7 @@ def run_pipeline_stream(
         (
             f"Step 1 complete: blueprint ready "
             f"(parse {t_parse - t0:.1f}s, blueprint {t_bp - t_parse:.1f}s). "
-            f"Step 2: generating render..."
+            f"Step 2: generating render ({image_size}px, {num_inference_steps} steps)..."
         ),
         schema,
     )
@@ -92,7 +98,14 @@ def run_pipeline_stream(
 
     # Step 2b — generate
     try:
-        candidates = generate_images(schema, edge_map, n=1, seed_offset=seed_offset)
+        candidates = generate_images(
+            schema,
+            edge_map,
+            n=1,
+            seed_offset=seed_offset,
+            image_size=image_size,
+            num_inference_steps=num_inference_steps,
+        )
     except Exception as e:
         yield [], blueprint, f"Image generation failed: {e}", schema
         return
@@ -106,6 +119,8 @@ def run_pipeline_stream(
     t_rank = time.perf_counter()
 
     timings = (
+        f"size={image_size}px "
+        f"steps={num_inference_steps} "
         f"parse={t_parse - t0:.1f}s "
         f"bp={t_bp - t_parse:.1f}s "
         f"edge={t_edge - t_bp:.1f}s "
@@ -121,16 +136,19 @@ def run_pipeline_stream(
 # State helper — tracks a seed offset so "Regenerate" produces new images
 # ─────────────────────────────────────────────────────────────────────────────
 
-def generate_handler(vibe_text, seed_state, history):
+def generate_handler(vibe_text, seed_state, history, image_size, num_inference_steps):
     history = [vibe_text]
     new_seed = seed_state + 100
     for ranked, blueprint, status, schema in run_pipeline_stream(
-        vibe_text, seed_offset=seed_state
+        vibe_text,
+        seed_offset=seed_state,
+        image_size=image_size,
+        num_inference_steps=num_inference_steps,
     ):
         yield ranked, blueprint, status, new_seed, history, ranked, schema
 
 
-def refine_handler(vibe_text, refinement_text, seed_state, history):
+def refine_handler(vibe_text, refinement_text, seed_state, history, image_size, num_inference_steps):
     if not refinement_text.strip():
         yield [], None, "Please enter a refinement.", seed_state, history, [], {}
         return
@@ -138,7 +156,10 @@ def refine_handler(vibe_text, refinement_text, seed_state, history):
     full_context = " | ".join(history)
     new_seed = seed_state + 100
     for ranked, blueprint, status, schema in run_pipeline_stream(
-        full_context, seed_offset=seed_state
+        full_context,
+        seed_offset=seed_state,
+        image_size=image_size,
+        num_inference_steps=num_inference_steps,
     ):
         yield ranked, blueprint, status, new_seed, history, ranked, schema
 
@@ -234,6 +255,24 @@ with gr.Blocks(
                 lines=2,
             )
 
+            image_size_input = gr.Slider(
+                label="Render size",
+                minimum=256,
+                maximum=768,
+                step=8,
+                value=DEFAULT_IMAGE_SIZE,
+                info="Square output size in pixels. Larger is slower.",
+            )
+
+            steps_input = gr.Slider(
+                label="Inference steps",
+                minimum=5,
+                maximum=50,
+                step=1,
+                value=DEFAULT_INFERENCE_STEPS,
+                info="Higher usually improves quality but increases latency.",
+            )
+
             with gr.Row():
                 generate_btn = gr.Button("Generate", variant="primary")
                 refine_btn = gr.Button("Refine", variant="secondary")
@@ -285,7 +324,8 @@ with gr.Blocks(
                shown immediately.
             2. **Edge Map** — a procedural layout is built from the room list.
             3. **ControlNet + SD 1.5 (Step 2)** — a single render is generated
-               with the edge map as structural conditioning.
+                    with the edge map as structural conditioning, using your chosen
+                    render size and step count.
             4. **CLIP Ranking** — the render is scored against your vibe
                description.
             5. **Regenerate** shifts the random seed for a fresh Step 2 render
@@ -309,19 +349,19 @@ with gr.Blocks(
 
     generate_btn.click(
         fn=generate_handler,
-        inputs=[vibe_input, seed_state, history_state],
+        inputs=[vibe_input, seed_state, history_state, image_size_input, steps_input],
         outputs=[gallery, blueprint_output, status_box, seed_state, history_state, images_state, schema_state],
     )
 
     refine_btn.click(
         fn=refine_handler,
-        inputs=[vibe_input, refinement_input, seed_state, history_state],
+        inputs=[vibe_input, refinement_input, seed_state, history_state, image_size_input, steps_input],
         outputs=[gallery, blueprint_output, status_box, seed_state, history_state, images_state, schema_state],
     )
 
     regenerate_btn.click(
         fn=generate_handler,
-        inputs=[vibe_input, seed_state, history_state],
+        inputs=[vibe_input, seed_state, history_state, image_size_input, steps_input],
         outputs=[gallery, blueprint_output, status_box, seed_state, history_state, images_state, schema_state],
     )
 

@@ -18,7 +18,7 @@ def run(user_text: str):
     edge_map.save("outputs/edge_map.png")
 
     print("\n--- Generating images ---")
-    images = generate_images(schema, edge_map, n=3)
+    images = generate_images(schema, edge_map, n=1)
 
     print("\n--- Ranking images ---")
     ranked = rank_images(images, user_text)

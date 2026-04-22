@@ -9,3 +9,5 @@ diffusers
 transformers
 accelerate
 gradio
+torchvision
+matplotlib

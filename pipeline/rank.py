@@ -12,6 +12,8 @@ def _load():
     _processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
 
 def rank_images(images: list, text: str) -> list:
+    if len(images) <= 1:
+        return list(images)
     _load()
     inputs = _processor(
         text=[text], images=images, return_tensors="pt", padding=True

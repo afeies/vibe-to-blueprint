@@ -39,6 +39,11 @@ Then open http://localhost:7860 in your browser.
 python main.py
 ```
 
+### Image generation settings
+
+The Gradio app exposes controls for render size and inference steps on the left side
+of the UI. You can change them per generation without restarting the app.
+
 ### Mock mode (no API key / GPU required)
 
 Run either entry point with the `MOCK` env var to use stubbed pipeline modules:
